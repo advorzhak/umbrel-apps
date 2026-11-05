@@ -1,0 +1,50 @@
+name: Clean ditto-relay package versions
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/ditto-relay-cleanup.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  PACKAGE: ditto-relay
+  KEEP_TAG: sha-e8974053dcf99ac952d1951deaffec105aeb08f1
+
+jobs:
+  clean:
+    name: Keep only the tagged image version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete older package versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          versions=$(gh api --paginate --slurp "/user/packages/container/${PACKAGE}/versions?per_page=100")
+          keep=$(echo "$versions" | jq -r --arg tag "$KEEP_TAG" '
+            add
+            | map(select((.metadata.container.tags // []) | index($tag)))
+            | sort_by(.created_at)
+            | last
+            | .id // empty
+          ')
+          if [ -z "$keep" ]; then
+            echo "No version found with tag $KEEP_TAG; refusing to delete anything."
+            exit 1
+          fi
+          echo "Keeping version $keep ($KEEP_TAG)"
+          echo "$versions" | jq -r --argjson keep "$keep" '
+            add
+            | .[]
+            | select(.id != $keep)
+            | .id
+          ' | while read -r id; do
+            [ -z "$id" ] && continue
+            echo "Deleting version $id"
+            gh api -X DELETE "/user/packages/container/${PACKAGE}/versions/${id}" || echo "Failed to delete $id"
+          done
+          echo "Done."
