@@ -36,6 +36,7 @@ jobs:
           git -C upstream apply "$GITHUB_WORKSPACE/ditto-relay/image/patches/0001-write-allowlist.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/ditto-relay/image/patches/0002-dashboard.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/ditto-relay/image/patches/0003-dashboard-settings.patch"
+          git -C upstream apply "$GITHUB_WORKSPACE/ditto-relay/image/patches/0004-dashboard-unlock.patch"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

@@ -1,0 +1,226 @@
+diff --git a/src/landing-page.ts b/src/landing-page.ts
+index 0642ba2..b5f2ffa 100644
+--- a/src/landing-page.ts
++++ b/src/landing-page.ts
+@@ -242,6 +242,16 @@ export function renderLandingPage(
+     .status-line.error{color:#ff7b7b}
+     .status-line.ok{color:var(--ok)}
+ 
++    /* Unlock modal */
++    .modal-backdrop{position:fixed;inset:0;background:rgba(4,4,8,0.72);backdrop-filter:blur(6px);
++      display:flex;align-items:center;justify-content:center;padding:24px;z-index:50}
++    .modal-backdrop[hidden]{display:none}
++    .modal{width:100%;max-width:420px;background:var(--surface);border:1px solid var(--border);
++      border-radius:var(--radius);padding:24px;box-shadow:0 24px 80px #0008}
++    .modal h2{margin-bottom:8px}
++    .modal label{margin-top:16px}
++    .modal .actions{margin-top:16px}
++
+     /* Footer */
+     .footer{margin-top:28px;text-align:center;color:var(--text-dim);font-size:0.72rem}
+     .footer a{color:inherit;text-decoration:none}
+@@ -305,12 +315,10 @@ export function renderLandingPage(
+         <h2>Dashboard access</h2>
+         <span class="pill" id="admin-pill">Read-only</span>
+       </div>
+-      <p class="muted">Use the app password from Umbrel: App settings &rarr; Default credentials. It is required to change sync or relay settings.</p>
+-      <div class="form">
+-        <div>
+-          <label for="admin-password">Password</label>
+-          <input id="admin-password" type="password" autocomplete="current-password" placeholder="Umbrel app password">
+-        </div>
++      <p class="muted">Use the app password from Umbrel: App settings &rarr; Default credentials. It unlocks the sync and relay settings forms; without it the dashboard stays read-only.</p>
++      <div class="actions">
++        <button class="btn" type="button" id="unlock-button" onclick="openUnlock()">Unlock dashboard</button>
++        <span class="status-line" id="admin-status"></span>
+       </div>
+     </section>
+ 
+@@ -402,6 +410,20 @@ export function renderLandingPage(
+         </div>
+       </form>
+     </section>
++    <div class="modal-backdrop" id="unlock-modal" hidden>
++      <div class="modal">
++        <h2>Unlock dashboard</h2>
++        <p class="muted">Enter the app password from Umbrel: App settings &rarr; Default credentials. Read-only visitors can keep browsing without it.</p>
++        <label for="unlock-password">Password</label>
++        <input id="unlock-password" type="password" autocomplete="current-password" placeholder="Umbrel app password">
++        <div class="actions">
++          <button class="btn" type="button" onclick="unlockDashboard()">Unlock</button>
++          <button class="btn secondary" type="button" onclick="closeUnlock()">View only</button>
++          <span class="status-line" id="unlock-status"></span>
++        </div>
++      </div>
++    </div>
++
+     <div class="footer">${software ? `<a href="${software}">Ditto Relay</a>` : "Ditto Relay"}${version ? ` <span class="version">${version}</span>` : ""}</div>
+   </div>
+   <script>
+@@ -507,26 +529,69 @@ export function renderLandingPage(
+     function splitList(value){
+       return String(value || '').split(',').map(function(v){ return v.trim(); }).filter(Boolean);
+     }
++    var dashboardPassword = sessionStorage.getItem('ditto-relay-dashboard-password') || '';
++    var serverEditable = null;
++
+     function getPassword(){
+-      return document.getElementById('admin-password').value;
++      if(dashboardPassword) return dashboardPassword;
++      if(serverEditable !== false) openUnlock();
++      return '';
++    }
++    function openUnlock(){
++      var modal = document.getElementById('unlock-modal');
++      modal.hidden = false;
++      var input = document.getElementById('unlock-password');
++      input.value = dashboardPassword || '';
++      input.focus();
++    }
++    function closeUnlock(){
++      document.getElementById('unlock-modal').hidden = true;
++    }
++    function unlockDashboard(){
++      var input = document.getElementById('unlock-password');
++      var value = input.value;
++      if(!value){ setUnlockStatus('Enter the dashboard password first.', 'error'); return; }
++      fetch('/api/auth', {headers: {'Authorization': 'Bearer ' + value}, cache: 'no-store'})
++        .then(function(r){
++          if(r.ok){
++            dashboardPassword = value;
++            sessionStorage.setItem('ditto-relay-dashboard-password', value);
++            input.value = '';
++            closeUnlock();
++            setEditable(true);
++            setAdminStatus('Unlocked. Settings are editable.', 'ok');
++          } else if(r.status === 403){
++            setUnlockStatus('Dashboard is read-only: APP_PASSWORD is not set.', 'error');
++          } else {
++            setUnlockStatus('Invalid password.', 'error');
++          }
++        })
++        .catch(function(){ setUnlockStatus('Could not reach the relay.', 'error'); });
++    }
++    function setUnlockStatus(message, kind){
++      var el = document.getElementById('unlock-status');
++      el.textContent = message || '';
++      el.className = 'status-line' + (kind ? ' ' + kind : '');
++    }
++    function setAdminStatus(message, kind){
++      var el = document.getElementById('admin-status');
++      el.textContent = message || '';
++      el.className = 'status-line' + (kind ? ' ' + kind : '');
+     }
+     function setEditable(value){
+       editable = !!value;
+-      document.getElementById('admin-password').disabled = !editable;
++      serverEditable = !!value;
+       document.getElementById('sync-save').disabled = !editable;
+       document.getElementById('settings-save').disabled = !editable;
++      document.getElementById('unlock-button').disabled = !editable;
+       var pill = document.getElementById('admin-pill');
+       pill.textContent = editable ? 'Unlocked' : 'Read-only';
+       pill.className = 'pill' + (editable ? ' on' : '');
+-      if(!editable){
+-        document.getElementById('admin-password').placeholder = 'Set APP_PASSWORD to enable editing';
+-      }
+     }
+     function saveSync(event){
+       event.preventDefault();
+       var password = getPassword();
+       if(!password){ setStatus('Enter the dashboard password first.', 'error'); return; }
+-      localStorage.setItem('ditto-relay-dashboard-password', password);
+ 
+       var kinds = splitList(document.getElementById('sync-kinds').value)
+         .map(function(v){ return parseInt(v, 10); })
+@@ -588,7 +653,6 @@ export function renderLandingPage(
+       event.preventDefault();
+       var password = getPassword();
+       if(!password){ setSettingsStatus('Enter the dashboard password first.', 'error'); return; }
+-      localStorage.setItem('ditto-relay-dashboard-password', password);
+ 
+       var payload = {
+         writeAllowedPubkeys: splitList(document.getElementById('settings-allowed').value),
+@@ -622,12 +686,32 @@ export function renderLandingPage(
+       el.className = 'status-line' + (kind ? ' ' + kind : '');
+     }
+ 
+-    var saved = localStorage.getItem('ditto-relay-dashboard-password');
+-    if(saved) document.getElementById('admin-password').value = saved;
++    function tryStoredPassword(){
++      if(serverEditable === null){ setTimeout(tryStoredPassword, 500); return; }
++      if(serverEditable === false){
++        setAdminStatus('Read-only: APP_PASSWORD is not set.', 'error');
++        return;
++      }
++      if(!dashboardPassword){ openUnlock(); return; }
++      fetch('/api/auth', {headers: {'Authorization': 'Bearer ' + dashboardPassword}, cache: 'no-store'})
++        .then(function(r){
++          if(r.ok){
++            setEditable(true);
++            setAdminStatus('Unlocked. Settings are editable.', 'ok');
++          } else {
++            dashboardPassword = '';
++            sessionStorage.removeItem('ditto-relay-dashboard-password');
++            setEditable(true);
++            openUnlock();
++          }
++        })
++        .catch(function(){ openUnlock(); });
++    }
+ 
+     loadStats();
+     loadSync();
+     loadSettings();
++    tryStoredPassword();
+     setInterval(loadStats, 5000);
+   </script>
+ </body>
+diff --git a/src/server.ts b/src/server.ts
+index d2449b8..e3efb9a 100644
+--- a/src/server.ts
++++ b/src/server.ts
+@@ -344,6 +344,31 @@ async function dashboardSyncGet(): Promise<Response> {
+   );
+ }
+ 
++function dashboardAuthGet(req: Request): Response {
++  const headers = {
++    "Content-Type": "application/json",
++    "Cache-Control": "no-store",
++  };
++
++  if (!config.dashboardPassword) {
++    return new Response(
++      JSON.stringify({ error: "Dashboard is read-only" }),
++      { status: 403, headers },
++    );
++  }
++
++  const auth = req.headers.get("authorization") ?? "";
++  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
++  if (!constantTimeEqual(token, config.dashboardPassword)) {
++    return new Response(JSON.stringify({ error: "Invalid password" }), {
++      status: 401,
++      headers,
++    });
++  }
++
++  return new Response(JSON.stringify({ ok: true }), { headers });
++}
++
+ function constantTimeEqual(a: string, b: string): boolean {
+   if (a.length !== b.length) return false;
+   let diff = 0;
+@@ -751,6 +776,11 @@ const server = serve<WebSocketData>({
+         return await dashboardSyncGet();
+       }
+ 
++      // Verify the dashboard password without writing anything.
++      if (url.pathname === "/api/auth") {
++        return dashboardAuthGet(req);
++      }
++
+       // Dashboard relay policy settings.
+       if (url.pathname === "/api/settings") {
+         return await dashboardSettingsGet();
