@@ -35,6 +35,7 @@ jobs:
           cp ditto-relay/image/sync.ts upstream/scripts/sync.ts
           git -C upstream apply "$GITHUB_WORKSPACE/ditto-relay/image/patches/0001-write-allowlist.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/ditto-relay/image/patches/0002-dashboard.patch"
+          git -C upstream apply "$GITHUB_WORKSPACE/ditto-relay/image/patches/0003-dashboard-settings.patch"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

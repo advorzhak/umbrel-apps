@@ -1,0 +1,634 @@
+diff --git a/src/landing-page.ts b/src/landing-page.ts
+index 900f63f..0642ba2 100644
+--- a/src/landing-page.ts
++++ b/src/landing-page.ts
+@@ -228,10 +228,10 @@ export function renderLandingPage(
+     @media (max-width:700px){.form{grid-template-columns:1fr}}
+     label{display:block;font-size:0.78rem;font-weight:600;margin-bottom:5px}
+     label small{font-weight:400;color:var(--text-dim);margin-left:6px}
+-    input[type=text],input[type=password],input[type=number],textarea{
++    input[type=text],input[type=password],input[type=number],select,textarea{
+       width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;
+       color:var(--text);font-family:inherit;font-size:0.85rem;padding:10px 12px;outline:none;transition:border-color .15s}
+-    input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(124,92,252,0.15)}
++    input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(124,92,252,0.15)}
+     textarea{min-height:64px;resize:vertical}
+     .actions{display:flex;align-items:center;gap:12px;margin-top:16px;flex-wrap:wrap}
+     .btn{background:linear-gradient(135deg,var(--accent-2),var(--accent));border:none;border-radius:10px;color:#fff;
+@@ -300,6 +300,20 @@ export function renderLandingPage(
+       </section>
+     </div>
+ 
++    <section class="card panel sync">
++      <div class="sync-head">
++        <h2>Dashboard access</h2>
++        <span class="pill" id="admin-pill">Read-only</span>
++      </div>
++      <p class="muted">Use the app password from Umbrel: App settings &rarr; Default credentials. It is required to change sync or relay settings.</p>
++      <div class="form">
++        <div>
++          <label for="admin-password">Password</label>
++          <input id="admin-password" type="password" autocomplete="current-password" placeholder="Umbrel app password">
++        </div>
++      </div>
++    </section>
++
+     <section class="card panel sync">
+       <div class="sync-head">
+         <h2>Sync from public relays</h2>
+@@ -327,10 +341,6 @@ export function renderLandingPage(
+           <label for="sync-since">Initial history (days) <small>0 = all</small></label>
+           <input id="sync-since" type="number" min="0" step="1" value="0">
+         </div>
+-        <div>
+-          <label for="sync-password">Dashboard password</label>
+-          <input id="sync-password" type="password" autocomplete="current-password" placeholder="Umbrel app password">
+-        </div>
+         <div class="full actions">
+           <button class="btn" type="submit" id="sync-save">Save and sync</button>
+           <button class="btn secondary" type="button" onclick="loadSync()">Reload</button>
+@@ -339,6 +349,59 @@ export function renderLandingPage(
+       </form>
+     </section>
+ 
++    <section class="card panel sync">
++      <div class="sync-head">
++        <h2>Relay settings</h2>
++        <span class="pill" id="settings-pill">Loading</span>
++      </div>
++      <p class="muted">Policy changes apply to new events within a few seconds. Request-limit changes are advertised in NIP-11 immediately; message-size limits still require an app restart.</p>
++      <form class="form" id="settings-form" onsubmit="saveSettings(event)">
++        <div class="full">
++          <label for="settings-allowed">Approved authors <small>npub or hex, comma separated. Empty = anyone can publish</small></label>
++          <textarea id="settings-allowed" placeholder="npub1..."></textarea>
++        </div>
++        <div>
++          <label for="settings-rejected">Rejected kinds <small>comma separated</small></label>
++          <input id="settings-rejected" type="text" placeholder="13, 9734">
++        </div>
++        <div>
++          <label for="settings-banned">Banned hashtags <small>comma separated</small></label>
++          <input id="settings-banned" type="text" placeholder="spam, scam">
++        </div>
++        <div>
++          <label for="settings-nsfw">NSFW hashtags <small>empty disables classification</small></label>
++          <input id="settings-nsfw" type="text" placeholder="nsfw, adult">
++        </div>
++        <div>
++          <label for="settings-reject-nsfw">Reject NSFW events</label>
++          <select id="settings-reject-nsfw">
++            <option value="false">No, index with a marker</option>
++            <option value="true">Yes, reject at ingestion</option>
++          </select>
++        </div>
++        <div>
++          <label for="settings-spam">Spam threshold <small>0 to 1, 0 disables scoring</small></label>
++          <input id="settings-spam" type="number" min="0" max="1" step="0.01" value="0.99">
++        </div>
++        <div>
++          <label for="settings-max-filter">Max filter values</label>
++          <input id="settings-max-filter" type="number" min="1" step="1" value="20000">
++        </div>
++        <div>
++          <label for="settings-max-limit">Max events per filter</label>
++          <input id="settings-max-limit" type="number" min="1" step="1" value="1000">
++        </div>
++        <div>
++          <label for="settings-default-limit">Default events per filter</label>
++          <input id="settings-default-limit" type="number" min="1" step="1" value="100">
++        </div>
++        <div class="full actions">
++          <button class="btn" type="submit" id="settings-save">Save relay settings</button>
++          <button class="btn secondary" type="button" onclick="loadSettings()">Reload</button>
++          <span class="status-line" id="settings-status"></span>
++        </div>
++      </form>
++    </section>
+     <div class="footer">${software ? `<a href="${software}">Ditto Relay</a>` : "Ditto Relay"}${version ? ` <span class="version">${version}</span>` : ""}</div>
+   </div>
+   <script>
+@@ -393,11 +456,7 @@ export function renderLandingPage(
+       }
+ 
+       editable = !!data.editable;
+-      document.getElementById('sync-save').disabled = !editable;
+-      document.getElementById('sync-password').disabled = !editable;
+-      if(!editable){
+-        document.getElementById('sync-password').placeholder = 'Set APP_PASSWORD to enable editing';
+-      }
++      setEditable(editable);
+     }
+     function escapeHtml(value){
+       return String(value).replace(/[&<>"']/g, function(c){
+@@ -437,8 +496,7 @@ export function renderLandingPage(
+       fetch('/api/sync', {cache:'no-store'}).then(function(r){ return r.json(); }).then(function(config){
+         renderSync(config);
+         editable = !!config.editable;
+-        document.getElementById('sync-save').disabled = !editable;
+-        document.getElementById('sync-password').disabled = !editable;
++        setEditable(editable);
+       }).catch(function(){});
+     }
+     function setStatus(message, kind){
+@@ -449,9 +507,24 @@ export function renderLandingPage(
+     function splitList(value){
+       return String(value || '').split(',').map(function(v){ return v.trim(); }).filter(Boolean);
+     }
++    function getPassword(){
++      return document.getElementById('admin-password').value;
++    }
++    function setEditable(value){
++      editable = !!value;
++      document.getElementById('admin-password').disabled = !editable;
++      document.getElementById('sync-save').disabled = !editable;
++      document.getElementById('settings-save').disabled = !editable;
++      var pill = document.getElementById('admin-pill');
++      pill.textContent = editable ? 'Unlocked' : 'Read-only';
++      pill.className = 'pill' + (editable ? ' on' : '');
++      if(!editable){
++        document.getElementById('admin-password').placeholder = 'Set APP_PASSWORD to enable editing';
++      }
++    }
+     function saveSync(event){
+       event.preventDefault();
+-      var password = document.getElementById('sync-password').value;
++      var password = getPassword();
+       if(!password){ setStatus('Enter the dashboard password first.', 'error'); return; }
+       localStorage.setItem('ditto-relay-dashboard-password', password);
+ 
+@@ -490,11 +563,71 @@ export function renderLandingPage(
+       });
+     }
+ 
++    function splitNumbers(value){
++      return String(value || '').split(',').map(function(v){ return parseInt(v.trim(), 10); }).filter(function(v){ return !isNaN(v); });
++    }
++    function loadSettings(){
++      fetch('/api/settings', {cache:'no-store'}).then(function(r){ return r.json(); }).then(function(config){
++        document.getElementById('settings-allowed').value = (config.writeAllowedPubkeys || []).join(', ');
++        document.getElementById('settings-rejected').value = (config.rejectedKinds || []).join(', ');
++        document.getElementById('settings-banned').value = (config.bannedHashtags || []).join(', ');
++        document.getElementById('settings-nsfw').value = (config.nsfwHashtags || []).join(', ');
++        document.getElementById('settings-reject-nsfw').value = config.rejectNsfw ? 'true' : 'false';
++        document.getElementById('settings-spam').value = config.spamThreshold;
++        document.getElementById('settings-max-filter').value = config.maxFilterValues;
++        document.getElementById('settings-max-limit').value = config.maxLimit;
++        document.getElementById('settings-default-limit').value = config.defaultLimit;
++        var pill = document.getElementById('settings-pill');
++        var count = (config.writeAllowedPubkeys || []).length;
++        pill.textContent = count ? count + ' approved author' + (count === 1 ? '' : 's') : 'Open writes';
++        pill.className = 'pill' + (count ? ' on' : '');
++        setEditable(!!config.editable);
++      }).catch(function(){});
++    }
++    function saveSettings(event){
++      event.preventDefault();
++      var password = getPassword();
++      if(!password){ setSettingsStatus('Enter the dashboard password first.', 'error'); return; }
++      localStorage.setItem('ditto-relay-dashboard-password', password);
++
++      var payload = {
++        writeAllowedPubkeys: splitList(document.getElementById('settings-allowed').value),
++        rejectedKinds: splitNumbers(document.getElementById('settings-rejected').value),
++        bannedHashtags: splitList(document.getElementById('settings-banned').value),
++        nsfwHashtags: splitList(document.getElementById('settings-nsfw').value),
++        rejectNsfw: document.getElementById('settings-reject-nsfw').value === 'true',
++        spamThreshold: parseFloat(document.getElementById('settings-spam').value),
++        maxFilterValues: parseInt(document.getElementById('settings-max-filter').value, 10),
++        maxLimit: parseInt(document.getElementById('settings-max-limit').value, 10),
++        defaultLimit: parseInt(document.getElementById('settings-default-limit').value, 10)
++      };
++
++      document.getElementById('settings-save').disabled = true;
++      setSettingsStatus('Saving\u2026');
++      fetch('/api/settings', {
++        method: 'PUT',
++        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + password},
++        body: JSON.stringify(payload)
++      }).then(function(r){ return r.json().then(function(body){ return {ok:r.ok, body:body}; }); })
++        .then(function(result){
++          if(!result.ok){ setSettingsStatus(result.body.error || 'Could not save settings.', 'error'); return; }
++          setSettingsStatus('Saved. Policy applies within a few seconds.', 'ok');
++          loadSettings();
++        }).catch(function(){ setSettingsStatus('Could not reach the relay.', 'error'); })
++        .finally(function(){ document.getElementById('settings-save').disabled = !editable; });
++    }
++    function setSettingsStatus(message, kind){
++      var el = document.getElementById('settings-status');
++      el.textContent = message || '';
++      el.className = 'status-line' + (kind ? ' ' + kind : '');
++    }
++
+     var saved = localStorage.getItem('ditto-relay-dashboard-password');
+-    if(saved) document.getElementById('sync-password').value = saved;
++    if(saved) document.getElementById('admin-password').value = saved;
+ 
+     loadStats();
+     loadSync();
++    loadSettings();
+     setInterval(loadStats, 5000);
+   </script>
+ </body>
+diff --git a/src/protocol-worker.ts b/src/protocol-worker.ts
+index 2a0c2bf..449ec54 100644
+--- a/src/protocol-worker.ts
++++ b/src/protocol-worker.ts
+@@ -20,6 +20,7 @@
+ 
+ declare var self: Worker;
+ 
++import { readFile } from "node:fs/promises";
+ import process from "node:process";
+ import type { NostrEvent } from "nostr-tools";
+ 
+@@ -104,11 +105,16 @@ const storage: AnalyzableRelay & SyncableStorage = {
+ const spamClassifier =
+   config.spamThreshold > 0 ? await createSpamClassifier() : undefined;
+ 
++// Mutable references so dashboard settings can update moderation live
++// without recreating the analyzer (which would reload the nspam model).
++const runtimeNsfwHashtags = new Set(config.nsfwHashtags);
++const spamRuntime = spamClassifier
++  ? { classifier: spamClassifier, threshold: config.spamThreshold }
++  : undefined;
++
+ const analyze = await createAnalyzer({
+-  nsfwHashtags: config.nsfwHashtags,
+-  ...(spamClassifier && {
+-    spam: { classifier: spamClassifier, threshold: config.spamThreshold },
+-  }),
++  nsfwHashtags: runtimeNsfwHashtags,
++  ...(spamRuntime && { spam: spamRuntime }),
+ });
+ 
+ // ---------------------------------------------------------------------------
+@@ -219,6 +225,84 @@ const relay = new Relay(storage, {
+   },
+ });
+ 
++// ---------------------------------------------------------------------------
++// Dashboard hot-reloaded policy (data/sync/settings.json)
++// ---------------------------------------------------------------------------
++
++const settingsFile = `${config.syncDataDir}/settings.json`;
++
++function stringArray(value: unknown): string[] | undefined {
++  return Array.isArray(value)
++    ? value.filter((entry): entry is string => typeof entry === "string")
++    : undefined;
++}
++
++function numberArray(value: unknown): number[] | undefined {
++  return Array.isArray(value)
++    ? value
++        .map((entry) => Number(entry))
++        .filter((entry) => Number.isInteger(entry))
++    : undefined;
++}
++
++async function applyDashboardSettings(): Promise<void> {
++  let raw: Record<string, unknown>;
++  try {
++    raw = JSON.parse(await readFile(settingsFile, "utf8")) as Record<
++      string,
++      unknown
++    >;
++  } catch {
++    return;
++  }
++
++  const allowed = stringArray(raw.writeAllowedPubkeys);
++  const rejected = numberArray(raw.rejectedKinds);
++  const banned = stringArray(raw.bannedHashtags);
++  const nsfw = stringArray(raw.nsfwHashtags);
++
++  relay.applyRuntimeSettings({
++    ...(allowed && {
++      writeAllowedPubkeys: new Set(
++        allowed.map((value) => value.toLowerCase()),
++      ),
++    }),
++    ...(rejected && { rejectedKinds: new Set(rejected) }),
++    ...(banned && {
++      bannedHashtags: new Set(banned.map((value) => value.toLowerCase())),
++    }),
++    ...(typeof raw.rejectNsfw === "boolean" && { rejectNsfw: raw.rejectNsfw }),
++    ...(Number.isInteger(Number(raw.maxFilterValues)) && {
++      maxFilterValues: Number(raw.maxFilterValues),
++    }),
++    ...(Number.isInteger(Number(raw.maxLimit)) && {
++      maxLimit: Number(raw.maxLimit),
++    }),
++    ...(Number.isInteger(Number(raw.defaultLimit)) && {
++      defaultLimit: Number(raw.defaultLimit),
++    }),
++  });
++
++  if (nsfw) {
++    runtimeNsfwHashtags.clear();
++    for (const tag of nsfw) runtimeNsfwHashtags.add(tag.toLowerCase());
++  }
++
++  if (
++    spamRuntime &&
++    typeof raw.spamThreshold === "number" &&
++    Number.isFinite(raw.spamThreshold) &&
++    raw.spamThreshold >= 0
++  ) {
++    spamRuntime.threshold = raw.spamThreshold;
++  }
++}
++
++setInterval(() => {
++  void applyDashboardSettings();
++}, 5_000);
++void applyDashboardSettings();
++
+ const conns = new Map<number, RelayConn>();
+ 
+ function openConn(id: number, ip?: string, userAgent?: string): void {
+diff --git a/src/relay.ts b/src/relay.ts
+index da2b7e6..1237eac 100644
+--- a/src/relay.ts
++++ b/src/relay.ts
+@@ -848,6 +848,46 @@ export class Relay {
+     }
+   }
+ 
++  /**
++   * Apply hot-reloadable policy from the dashboard. Only fields present are
++   * replaced; omitted fields keep their current value. Intended to be called
++   * after reading `settings.json`, from the same worker that owns this Relay.
++   */
++  applyRuntimeSettings(settings: {
++    writeAllowedPubkeys?: Set<string>;
++    rejectedKinds?: Set<number>;
++    bannedHashtags?: Set<string>;
++    rejectNsfw?: boolean;
++    maxFilterValues?: number;
++    maxLimit?: number;
++    defaultLimit?: number;
++  }): void {
++    if (settings.writeAllowedPubkeys) {
++      this.writeAllowedPubkeys = settings.writeAllowedPubkeys;
++    }
++    if (settings.rejectedKinds) {
++      this.rejectedKinds = settings.rejectedKinds;
++    }
++    if (settings.bannedHashtags) {
++      this.bannedHashtags = settings.bannedHashtags;
++    }
++    if (typeof settings.rejectNsfw === "boolean") {
++      this.rejectNsfw = settings.rejectNsfw;
++    }
++    if (
++      typeof settings.maxFilterValues === "number" &&
++      settings.maxFilterValues > 0
++    ) {
++      this.maxFilterValues = settings.maxFilterValues;
++    }
++    if (typeof settings.maxLimit === "number" && settings.maxLimit > 0) {
++      this.maxLimit = settings.maxLimit;
++    }
++    if (typeof settings.defaultLimit === "number" && settings.defaultLimit > 0) {
++      this.defaultLimit = Math.min(settings.defaultLimit, this.maxLimit);
++    }
++  }
++
+   /**
+    * Check if an event is protected (NIP-70) by looking for the ["-"] tag.
+    */
+diff --git a/src/server.ts b/src/server.ts
+index 7989a19..d2449b8 100644
+--- a/src/server.ts
++++ b/src/server.ts
+@@ -3,6 +3,7 @@ import process from "node:process";
+ import { fileURLToPath } from "node:url";
+ import type { ServerWebSocket } from "bun";
+ import { serve } from "bun";
++import { nip19 } from "nostr-tools";
+ import { Config } from "./config.ts";
+ import { renderLandingPage } from "./landing-page.ts";
+ import { errFields, Logger } from "./log.ts";
+@@ -465,10 +466,197 @@ async function dashboardSyncPut(req: Request): Promise<Response> {
+   return new Response(JSON.stringify({ ok: true, ...configFile }), { headers });
+ }
+ 
++// ---------------------------------------------------------------------------
++// Dashboard relay policy settings
++// ---------------------------------------------------------------------------
++
++interface SettingsFile {
++  writeAllowedPubkeys?: string[];
++  rejectedKinds?: number[];
++  bannedHashtags?: string[];
++  nsfwHashtags?: string[];
++  rejectNsfw?: boolean;
++  spamThreshold?: number;
++  maxFilterValues?: number;
++  maxLimit?: number;
++  defaultLimit?: number;
++}
++
++const settingsPath = `${config.syncDataDir}/settings.json`;
++
++function normalizePubkey(value: string): string | undefined {
++  const trimmed = value.trim().toLowerCase();
++  if (/^[0-9a-f]{64}$/.test(trimmed)) return trimmed;
++  if (!trimmed.startsWith("npub1")) return undefined;
++  try {
++    const decoded = nip19.decode(trimmed);
++    return decoded.type === "npub" ? decoded.data : undefined;
++  } catch {
++    return undefined;
++  }
++}
++
++async function effectiveSettings(): Promise<SettingsFile> {
++  const file = (await readJsonFile<SettingsFile>(settingsPath)) ?? {};
++  return {
++    writeAllowedPubkeys:
++      file.writeAllowedPubkeys ?? [...config.writeAllowedPubkeys],
++    rejectedKinds: file.rejectedKinds ?? [...config.rejectedKinds],
++    bannedHashtags: file.bannedHashtags ?? [...config.bannedHashtags],
++    nsfwHashtags: file.nsfwHashtags ?? [...config.nsfwHashtags],
++    rejectNsfw: file.rejectNsfw ?? config.rejectNsfw,
++    spamThreshold: file.spamThreshold ?? config.spamThreshold,
++    maxFilterValues: file.maxFilterValues ?? config.maxFilterValues,
++    maxLimit: file.maxLimit ?? config.maxLimit,
++    defaultLimit: file.defaultLimit ?? config.defaultLimit,
++  };
++}
++
++async function dashboardSettingsGet(): Promise<Response> {
++  return new Response(
++    JSON.stringify({
++      ...(await effectiveSettings()),
++      editable: config.dashboardPassword.length > 0,
++    }),
++    {
++      headers: {
++        "Content-Type": "application/json",
++        "Access-Control-Allow-Origin": "*",
++        "Cache-Control": "no-store",
++      },
++    },
++  );
++}
++
++async function dashboardSettingsPut(req: Request): Promise<Response> {
++  const headers = {
++    "Content-Type": "application/json",
++    "Access-Control-Allow-Origin": "*",
++    "Cache-Control": "no-store",
++  };
++
++  if (!config.dashboardPassword) {
++    return new Response(JSON.stringify({ error: "Dashboard is read-only" }), {
++      status: 403,
++      headers,
++    });
++  }
++
++  const auth = req.headers.get("authorization") ?? "";
++  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
++  if (!constantTimeEqual(token, config.dashboardPassword)) {
++    return new Response(JSON.stringify({ error: "Invalid password" }), {
++      status: 401,
++      headers,
++    });
++  }
++
++  let body: SettingsFile;
++  try {
++    body = (await req.json()) as SettingsFile;
++  } catch {
++    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
++      status: 400,
++      headers,
++    });
++  }
++
++  const pubkeys: string[] = [];
++  for (const value of Array.isArray(body.writeAllowedPubkeys)
++    ? body.writeAllowedPubkeys
++    : []) {
++    const normalized = normalizePubkey(String(value));
++    if (!normalized) {
++      return new Response(
++        JSON.stringify({ error: `Invalid npub or hex pubkey: ${value}` }),
++        { status: 400, headers },
++      );
++    }
++    pubkeys.push(normalized);
++  }
++
++  const toNumbers = (value: unknown): number[] =>
++    Array.isArray(value)
++      ? value
++          .map((entry) => Number.parseInt(String(entry), 10))
++          .filter((entry) => Number.isInteger(entry) && entry >= 0)
++      : [];
++
++  const toTags = (value: unknown): string[] =>
++    Array.isArray(value)
++      ? value
++          .map((entry) => String(entry).trim().toLowerCase())
++          .filter(Boolean)
++      : [];
++
++  const positive = (value: unknown, fallback: number): number => {
++    const parsed = Number.parseInt(String(value ?? ""), 10);
++    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
++  };
++
++  const spamRaw = Number(body.spamThreshold);
++  const spamThreshold = Number.isFinite(spamRaw)
++    ? Math.min(1, Math.max(0, spamRaw))
++    : config.spamThreshold;
++
++  const maxFilterValues = positive(
++    body.maxFilterValues,
++    config.maxFilterValues,
++  );
++  const maxLimit = positive(body.maxLimit, config.maxLimit);
++  const defaultLimit = Math.min(
++    positive(body.defaultLimit, config.defaultLimit),
++    maxLimit,
++  );
++
++  const settings: SettingsFile = {
++    writeAllowedPubkeys: [...new Set(pubkeys)],
++    rejectedKinds: [...new Set(toNumbers(body.rejectedKinds))],
++    bannedHashtags: [...new Set(toTags(body.bannedHashtags))],
++    nsfwHashtags: [...new Set(toTags(body.nsfwHashtags))],
++    rejectNsfw: body.rejectNsfw === true,
++    spamThreshold,
++    maxFilterValues,
++    maxLimit,
++    defaultLimit,
++  };
++
++  try {
++    const { mkdir, rename, writeFile } = await import("node:fs/promises");
++    await mkdir(config.syncDataDir, { recursive: true });
++    const temporaryPath = `${settingsPath}.tmp`;
++    await writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`);
++    await rename(temporaryPath, settingsPath);
++  } catch (error) {
++    log.error("dashboard_settings_write_failed", errFields(error));
++    return new Response(JSON.stringify({ error: "Could not write settings" }), {
++      status: 500,
++      headers,
++    });
++  }
++
++  // Keep NIP-11's advertised limits in step with what workers now enforce.
++  const limitation = relayInfo.limitation as
++    | (Record<string, unknown> & { max_limit?: number })
++    | undefined;
++  if (limitation) {
++    limitation.max_limit = maxLimit;
++    limitation.max_filter_values = maxFilterValues;
++    nip11Json = JSON.stringify(relayInfo, null, 2);
++  }
++
++  log.info("dashboard_settings_updated", {
++    allowedAuthors: settings.writeAllowedPubkeys?.length ?? 0,
++    rejectedKinds: settings.rejectedKinds?.length ?? 0,
++  });
++
++  return new Response(JSON.stringify({ ok: true, ...settings }), { headers });
++}
++
+ // Pre-render the HTML landing page and the NIP-11 document (relay info is
+ // static after startup, so both are cached as strings).
+ const landingPageHtml = renderLandingPage(relayInfo, config.relayUrl, log);
+-const nip11Json = JSON.stringify(relayInfo, null, 2);
++let nip11Json = JSON.stringify(relayInfo, null, 2);
+ 
+ // Pre-load static assets into memory.
+ const faviconIco = await readFile(
+@@ -512,6 +700,10 @@ const server = serve<WebSocketData>({
+       return await dashboardSyncPut(req);
+     }
+ 
++    if (req.method === "PUT" && url.pathname === "/api/settings") {
++      return await dashboardSettingsPut(req);
++    }
++
+     // HEAD is served by the same handlers as GET: Bun strips the body from
+     // the response and keeps the headers, which is what HEAD callers
+     // (`curl -I`, health checks, NIP-11 probes) expect.
+@@ -559,6 +751,11 @@ const server = serve<WebSocketData>({
+         return await dashboardSyncGet();
+       }
+ 
++      // Dashboard relay policy settings.
++      if (url.pathname === "/api/settings") {
++        return await dashboardSettingsGet();
++      }
++
+       // Handle NIP-11 relay information document
+       if (url.pathname === "/") {
+         const acceptHeader = req.headers.get("accept");
