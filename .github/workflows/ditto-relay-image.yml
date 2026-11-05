@@ -29,8 +29,11 @@ jobs:
           git clone "$UPSTREAM_REPO" upstream
           git -C upstream checkout "$UPSTREAM_SHA"
 
-      - name: Add the Umbrel entrypoint to the build context
-        run: cp ditto-relay/image/docker-entrypoint.sh upstream/docker-entrypoint.sh
+      - name: Add the Umbrel entrypoint and sync worker
+        run: |
+          cp ditto-relay/image/docker-entrypoint.sh upstream/docker-entrypoint.sh
+          cp ditto-relay/image/sync.ts upstream/scripts/sync.ts
+          git -C upstream apply "$GITHUB_WORKSPACE/ditto-relay/image/patches/0001-write-allowlist.patch"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

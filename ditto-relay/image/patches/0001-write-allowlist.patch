@@ -1,0 +1,158 @@
+diff --git a/src/config.ts b/src/config.ts
+index 7fd07df..75223bf 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -5,6 +5,40 @@ import { nip19 } from "nostr-tools";
+ import type { LogLevel } from "./log.ts";
+ import { DEFAULT_NSFW_HASHTAGS } from "./nsfw.ts";
+ 
++/**
++ * Parse a comma-separated list of pubkeys, accepting either 64-character hex
++ * keys or bech32 `npub` values. Used for operator-managed pubkey lists.
++ */
++function parsePubkeyList(name: string, value: string): Set<string> {
++  return new Set(
++    value
++      .split(",")
++      .map((entry) => entry.trim())
++      .filter((entry) => entry.length > 0)
++      .map((entry) => {
++        if (entry.toLowerCase().startsWith("npub1")) {
++          try {
++            const decoded = nip19.decode(entry);
++            if (decoded.type !== "npub") {
++              throw new Error("not an npub");
++            }
++            return decoded.data;
++          } catch {
++            throw new Error(`${name} contains an invalid npub: ${entry}`);
++          }
++        }
++
++        const hex = entry.toLowerCase();
++        if (!/^[0-9a-f]{64}$/.test(hex)) {
++          throw new Error(
++            `${name} entries must be npub or 64-character hex pubkeys; invalid entry: ${entry}`,
++          );
++        }
++        return hex;
++      }),
++  );
++}
++
+ export class Config {
+   readonly port: number;
+   /** Minimum log level to emit: `debug` | `info` | `warn` | `error` (default: `info`). */
+@@ -75,6 +109,14 @@ export class Config {
+    * env var (comma-separated hex pubkeys). Default: empty (no master pubkeys).
+    */
+   readonly masterPubkeys: Set<string>;
++  /**
++   * Pubkeys allowed to publish events. When non-empty, an EVENT is accepted
++   * only when its author is in this set and the connection has authenticated
++   * (NIP-42) as that author. Empty preserves the upstream default of
++   * accepting events from any author. Set via `WRITE_ALLOWED_PUBKEYS`
++   * (comma-separated npub or hex pubkeys).
++   */
++  readonly writeAllowedPubkeys: Set<string>;
+   /**
+    * Seed pubkeys (hex) for the engagement web of trust. The background
+    * worker expands these 2 follow-hops via kind 3 contact lists; only
+@@ -389,6 +431,17 @@ export class Config {
+       this.masterPubkeys = new Set(pubkeys);
+     }
+ 
++    // writeAllowedPubkeys
++    const writeAllowedPubkeysValue = env.get("WRITE_ALLOWED_PUBKEYS");
++    if (!writeAllowedPubkeysValue) {
++      this.writeAllowedPubkeys = new Set();
++    } else {
++      this.writeAllowedPubkeys = parsePubkeyList(
++        "WRITE_ALLOWED_PUBKEYS",
++        writeAllowedPubkeysValue,
++      );
++    }
++
+     // wotSeedPubkeys
+     const wotSeedPubkeysValue = env.get("WOT_SEED_PUBKEYS");
+     if (!wotSeedPubkeysValue) {
+diff --git a/src/protocol-worker.ts b/src/protocol-worker.ts
+index 951777c..2a0c2bf 100644
+--- a/src/protocol-worker.ts
++++ b/src/protocol-worker.ts
+@@ -189,6 +189,7 @@ const relay = new Relay(storage, {
+   authKinds: config.authKinds,
+   authorExemptKinds: config.authorExemptKinds,
+   masterPubkeys: config.masterPubkeys,
++  writeAllowedPubkeys: config.writeAllowedPubkeys,
+   maxMessageLength: config.maxMessageLength,
+   maxFilterValues: config.maxFilterValues,
+   maxLimit: config.maxLimit,
+diff --git a/src/relay.ts b/src/relay.ts
+index 7134b9e..da2b7e6 100644
+--- a/src/relay.ts
++++ b/src/relay.ts
+@@ -312,6 +312,12 @@ export class Relay {
+    * connection authenticated as any of these bypasses all auth-kind gating.
+    */
+   private masterPubkeys: Set<string>;
++  /**
++   * Pubkeys allowed to publish. When non-empty, an EVENT is accepted only
++   * when its author is in this set and the connection authenticated as that
++   * author. Empty means no write restriction (upstream default).
++   */
++  private writeAllowedPubkeys: Set<string>;
+   /** Maximum number of entries allowed in any single filter array field. */
+   private maxFilterValues: number;
+   /** Events returned for a REQ filter that omits `limit`. */
+@@ -432,6 +438,12 @@ export class Relay {
+        * Default: empty.
+        */
+       masterPubkeys?: Set<string>;
++      /**
++       * Pubkeys allowed to publish. When non-empty, an EVENT is accepted only
++       * when its author is in this set and the connection authenticated
++       * (NIP-42) as that author. Default: empty (no write restriction).
++       */
++      writeAllowedPubkeys?: Set<string>;
+       /**
+        * Maximum size (bytes) of a single WebSocket message. Advertised via
+        * NIP-11 `limitation.max_message_length`. Must match the transport-layer
+@@ -534,6 +546,7 @@ export class Relay {
+     this.authKinds = opts.authKinds ?? new Set();
+     this.authorExemptKinds = opts.authorExemptKinds ?? new Set();
+     this.masterPubkeys = opts.masterPubkeys ?? new Set();
++    this.writeAllowedPubkeys = opts.writeAllowedPubkeys ?? new Set();
+     this.maxFilterValues = opts.maxFilterValues ?? 5000;
+     this.maxLimit = opts.maxLimit ?? 1000;
+     this.defaultLimit = Math.min(opts.defaultLimit ?? 100, this.maxLimit);
+@@ -878,6 +891,29 @@ export class Relay {
+       };
+     }
+ 
++    // Write allowlist: when configured, only approved authors may publish,
++    // and they must prove control of the key with NIP-42 on this connection.
++    if (this.writeAllowedPubkeys.size > 0) {
++      if (!this.writeAllowedPubkeys.has(event.pubkey)) {
++        return {
++          eventId: event.id,
++          accepted: false,
++          message:
++            "restricted: this relay only accepts events from approved authors",
++        };
++      }
++
++      if (!this.isAuthenticated(ws, event.pubkey)) {
++        this.ensureChallengeSent(ws);
++        return {
++          eventId: event.id,
++          accepted: false,
++          message:
++            "auth-required: authenticate as the event author to publish",
++        };
++      }
++    }
++
+     // NIP-70: Reject protected events unless the author is authenticated
+     if (this.isProtectedEvent(event)) {
+       if (!this.isAuthenticated(ws, event.pubkey)) {
