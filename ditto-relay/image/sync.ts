@@ -1,19 +1,22 @@
 /**
  * Sync events authored by configured identifiers from public relays into the
- * local OpenSearch index.
+ * local OpenSearch index, and report sync state for the relay dashboard.
  *
  * This service intentionally bypasses the relay's NIP-42 write policy: it
  * fetches signed events from public relays, verifies them, and feeds them to
  * the relay's own import script. That lets an operator back up activity from
  * approved npubs without holding their private keys.
  *
- * Configuration:
+ * Settings come from `SYNC_DATA_DIR/config.json` when the dashboard has saved
+ * them, and otherwise from the environment:
  *   SYNC_IDENTIFIERS        Comma-separated npub, nprofile, or NIP-05 values.
  *   SYNC_RELAYS             Optional comma-separated public relay URLs.
  *   SYNC_KINDS              Optional comma-separated kinds; empty means all.
  *   SYNC_INTERVAL_SECONDS   Seconds between sync runs (default 300).
  *   SYNC_SINCE_DAYS         Days of history for the first backfill (default 0 = all).
- *   SYNC_DATA_DIR           Cursor/checkpoint directory (default /sync).
+ *   SYNC_DATA_DIR           Config/state/cursor directory (default /sync).
+ *
+ * Progress is written to `state.json` for the dashboard to read.
  */
 
 import { spawn } from "node:child_process";
@@ -67,34 +70,110 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-const identifiers = splitList(process.env.SYNC_IDENTIFIERS);
-const relayOverride = splitList(process.env.SYNC_RELAYS)
-  .map(normalizeRelay)
-  .filter((value): value is string => value !== undefined);
-const kinds = splitList(process.env.SYNC_KINDS)
-  .map((value) => Number.parseInt(value, 10))
-  .filter((value) => Number.isInteger(value));
-const intervalSeconds = Math.max(
-  30,
-  Number.parseInt(process.env.SYNC_INTERVAL_SECONDS ?? "300", 10) || 300,
-);
-const sinceDays = Math.max(
-  0,
-  Number.parseInt(process.env.SYNC_SINCE_DAYS ?? "0", 10) || 0,
-);
 const dataDir = process.env.SYNC_DATA_DIR ?? "/sync";
 const cursorFile = join(dataDir, "cursors.json");
+const configFile = join(dataDir, "config.json");
+const stateFile = join(dataDir, "state.json");
 
-const rejectedKinds = new Set(
+const envRejectedKinds = new Set(
   splitList(
     process.env.REJECTED_KINDS ?? "13,9734,20013,20014,22242,24242,27235",
   )
     .map((value) => Number.parseInt(value, 10))
     .filter((value) => Number.isInteger(value)),
 );
-const bannedHashtags = new Set(
+const envBannedHashtags = new Set(
   splitList(process.env.BANNED_HASHTAGS).map((value) => value.toLowerCase()),
 );
+
+interface SyncConfig {
+  identifiers: string[];
+  relays: string[];
+  kinds: number[];
+  intervalSeconds: number;
+  sinceDays: number;
+  rejectedKinds: Set<number>;
+  bannedHashtags: Set<string>;
+}
+
+async function readJson<T>(path: string): Promise<T | undefined> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function fromEnv(): SyncConfig {
+  return {
+    identifiers: splitList(process.env.SYNC_IDENTIFIERS),
+    relays: splitList(process.env.SYNC_RELAYS),
+    kinds: splitList(process.env.SYNC_KINDS)
+      .map((value) => Number.parseInt(value, 10))
+      .filter((value) => Number.isInteger(value)),
+    intervalSeconds: Math.max(
+      30,
+      Number.parseInt(process.env.SYNC_INTERVAL_SECONDS ?? "300", 10) || 300,
+    ),
+    sinceDays: Math.max(
+      0,
+      Number.parseInt(process.env.SYNC_SINCE_DAYS ?? "0", 10) || 0,
+    ),
+    rejectedKinds: envRejectedKinds,
+    bannedHashtags: envBannedHashtags,
+  };
+}
+
+/**
+ * Dashboard settings win over environment settings, so the operator can
+ * change sync from the relay page without editing app settings.
+ */
+async function resolveConfig(): Promise<SyncConfig> {
+  const base = fromEnv();
+  const file = await readJson<{
+    identifiers?: string[];
+    relays?: string[];
+    kinds?: number[];
+    intervalSeconds?: number;
+    sinceDays?: number;
+  }>(configFile);
+  if (!file) return base;
+
+  return {
+    ...base,
+    identifiers: Array.isArray(file.identifiers)
+      ? file.identifiers.filter((value) => typeof value === "string")
+      : base.identifiers,
+    relays: Array.isArray(file.relays)
+      ? file.relays.filter((value) => typeof value === "string")
+      : base.relays,
+    kinds: Array.isArray(file.kinds)
+      ? file.kinds.filter((value) => Number.isInteger(value))
+      : base.kinds,
+    intervalSeconds:
+      Number.isInteger(file.intervalSeconds) && (file.intervalSeconds ?? 0) >= 30
+        ? (file.intervalSeconds as number)
+        : base.intervalSeconds,
+    sinceDays:
+      Number.isInteger(file.sinceDays) && (file.sinceDays ?? -1) >= 0
+        ? (file.sinceDays as number)
+        : base.sinceDays,
+  };
+}
+
+async function writeState(state: {
+  lastRunAt?: number;
+  lastImported?: number;
+  lastError?: string;
+}): Promise<void> {
+  try {
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(`${stateFile}.tmp`, `${JSON.stringify(state, null, 2)}\n`);
+    await rename(`${stateFile}.tmp`, stateFile);
+  } catch {
+    // The dashboard is optional; never fail a sync over a status write.
+  }
+}
 
 function log(message: string): void {
   console.log(`sync: ${message}`);
@@ -190,15 +269,19 @@ async function discoverRelays(
   }
 }
 
-function isAllowed(event: NostrEvent, pubkey: string): boolean {
+function isAllowed(
+  event: NostrEvent,
+  pubkey: string,
+  config: SyncConfig,
+): boolean {
   if (event.pubkey !== pubkey) return false;
-  if (rejectedKinds.has(event.kind)) return false;
+  if (config.rejectedKinds.has(event.kind)) return false;
   if (
     event.tags.some(
       (tag) =>
         tag[0] === "t" &&
         tag[1] &&
-        bannedHashtags.has(tag[1].toLowerCase()),
+        config.bannedHashtags.has(tag[1].toLowerCase()),
     )
   ) {
     return false;
@@ -211,9 +294,10 @@ async function fetchPage(
   relays: string[],
   pubkey: string,
   filter: Filter,
+  config: SyncConfig,
 ): Promise<NostrEvent[]> {
   const events = await pool.querySync(relays, filter, { maxWait: 20_000 });
-  return events.filter((event) => isAllowed(event, pubkey));
+  return events.filter((event) => isAllowed(event, pubkey, config));
 }
 
 function runImport(file: string, workDir: string): Promise<number> {
@@ -287,6 +371,7 @@ async function syncRange(
   pubkey: string,
   since: number,
   until: number,
+  config: SyncConfig,
   onPage: (events: NostrEvent[], nextUntil: number) => Promise<void>,
 ): Promise<number> {
   let cursorUntil = until;
@@ -299,9 +384,9 @@ async function syncRange(
       limit: PAGE_SIZE,
     };
     if (since > 0) filter.since = since;
-    if (kinds.length > 0) filter.kinds = kinds;
+    if (config.kinds.length > 0) filter.kinds = config.kinds;
 
-    const events = await fetchPage(pool, relays, pubkey, filter);
+    const events = await fetchPage(pool, relays, pubkey, filter, config);
     if (events.length === 0) break;
 
     const oldest = Math.min(...events.map((event) => event.created_at));
@@ -320,19 +405,47 @@ async function syncRange(
 }
 
 async function main(): Promise<void> {
-  if (identifiers.length === 0) {
-    log("SYNC_IDENTIFIERS is empty; sync disabled");
-    await new Promise<void>(() => {});
-  }
-
   await mkdir(dataDir, { recursive: true });
   const cursors = await loadCursors();
   const pool = new SimplePool();
+  let nextRunAt = 0;
+  let lastSignature = "";
 
+  // Re-read settings frequently so a save from the dashboard takes effect
+  // within seconds, while still honouring the configured run interval.
   while (true) {
+    const config = await resolveConfig();
     const now = Math.floor(Date.now() / 1000);
+    const signature = JSON.stringify({
+      identifiers: config.identifiers,
+      relays: config.relays,
+      kinds: config.kinds,
+      sinceDays: config.sinceDays,
+    });
 
-    for (const identifier of identifiers) {
+    if (signature !== lastSignature) {
+      lastSignature = signature;
+      nextRunAt = 0;
+    }
+
+    if (config.identifiers.length === 0) {
+      await writeState({ lastRunAt: now, lastImported: 0 });
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      continue;
+    }
+
+    if (now < nextRunAt) {
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      continue;
+    }
+
+    const relayOverride = config.relays
+      .map(normalizeRelay)
+      .filter((value): value is string => value !== undefined);
+    let imported = 0;
+    let lastError: string | undefined;
+
+    for (const identifier of config.identifiers) {
       try {
         const { pubkey, relays: nip05Relays } = await resolveIdentifier(
           identifier,
@@ -357,7 +470,9 @@ async function main(): Promise<void> {
 
         if (!cursor.backfillComplete) {
           const cutoff =
-            sinceDays > 0 ? now - sinceDays * 24 * 60 * 60 : 0;
+            config.sinceDays > 0
+              ? now - config.sinceDays * 24 * 60 * 60
+              : 0;
           log(
             `backfilling ${identifier} (${pubkey}) across ${relays.length} relays`,
           );
@@ -367,7 +482,10 @@ async function main(): Promise<void> {
             pubkey,
             cutoff,
             cursor.backfillUntil ?? now,
+            config,
             async (events, nextUntil) => {
+              imported += events.length;
+              await writeState({ lastRunAt: now, lastImported: imported });
               await ingest(events);
               cursor.backfillUntil = nextUntil;
               await saveCursors(cursors);
@@ -380,19 +498,36 @@ async function main(): Promise<void> {
           log(`backfill complete for ${identifier}`);
         } else {
           const since = Math.max(0, cursor.latest - OVERLAP_SECONDS);
-          await syncRange(pool, relays, pubkey, since, now, async (events) => {
-            await ingest(events);
-          });
+          await syncRange(
+            pool,
+            relays,
+            pubkey,
+            since,
+            now,
+            config,
+            async (events) => {
+              imported += events.length;
+              await ingest(events);
+            },
+          );
           cursor.latest = now;
           await saveCursors(cursors);
           log(`synced ${identifier}`);
         }
       } catch (cause) {
+        lastError = cause instanceof Error ? cause.message : String(cause);
         error(`identifier ${identifier} failed`, cause);
       }
     }
 
-    await new Promise((resolve) => setTimeout(resolve, intervalSeconds * 1000));
+    await writeState({
+      lastRunAt: now,
+      lastImported: imported,
+      ...(lastError ? { lastError } : {}),
+    });
+
+    nextRunAt = now + config.intervalSeconds;
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
 }
 
