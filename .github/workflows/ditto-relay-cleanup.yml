@@ -12,7 +12,6 @@ permissions:
 
 env:
   PACKAGE: ditto-relay
-  KEEP_TAG: sha-e8974053dcf99ac952d1951deaffec105aeb08f1
 
 jobs:
   clean:
@@ -22,25 +21,21 @@ jobs:
       - name: Delete older package versions
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_VERSIONS: "12"
         run: |
           set -euo pipefail
           versions=$(gh api --paginate --slurp "/user/packages/container/${PACKAGE}/versions?per_page=100")
-          keep=$(echo "$versions" | jq -r --arg tag "$KEEP_TAG" '
-            add
-            | map(select((.metadata.container.tags // []) | index($tag)))
-            | sort_by(.created_at)
-            | last
-            | .id // empty
-          ')
-          if [ -z "$keep" ]; then
-            echo "No version found with tag $KEEP_TAG; refusing to delete anything."
-            exit 1
+          total=$(echo "$versions" | jq 'add | length')
+          echo "Found $total package versions"
+          if [ "$total" -le "$KEEP_VERSIONS" ]; then
+            echo "Nothing to delete."
+            exit 0
           fi
-          echo "Keeping version $keep ($KEEP_TAG)"
-          echo "$versions" | jq -r --argjson keep "$keep" '
+          echo "$versions" | jq -r --argjson keep "$KEEP_VERSIONS" '
             add
+            | sort_by(.created_at)
+            | .[:($total - $keep)]
             | .[]
-            | select(.id != $keep)
             | .id
           ' | while read -r id; do
             [ -z "$id" ] && continue
