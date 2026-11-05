@@ -31,10 +31,11 @@ jobs:
             echo "Nothing to delete."
             exit 0
           fi
-          echo "$versions" | jq -r --argjson keep "$KEEP_VERSIONS" '
+          delete_count=$((total - KEEP_VERSIONS))
+          echo "$versions" | jq -r --argjson delete "$delete_count" '
             add
             | sort_by(.created_at)
-            | .[:($total - $keep)]
+            | .[:$delete]
             | .[]
             | .id
           ' | while read -r id; do
