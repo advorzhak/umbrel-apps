@@ -1,27 +1,42 @@
 #!/bin/sh
 set -eu
 
-# The relay requires a bech32 nsec signing key. Umbrel provides a stable
-# per-install hex seed; convert it to nsec here so the package never ships a
-# shared or hardcoded key.
+# The relay requires a bech32 nsec signing key. Generate it on first start and
+# keep it in app data so the relay identity survives restarts, updates, and
+# backups. Set NOSTR_SECRET_KEY to use an existing key instead.
+KEY_DIR="${DITTO_RELAY_KEY_DIR:-/keys}"
+
 if [ -z "${NOSTR_SECRET_KEY:-}" ]; then
-  if [ -z "${DITTO_RELAY_SECRET_SEED:-}" ]; then
-    echo "ditto-relay: DITTO_RELAY_SECRET_SEED or NOSTR_SECRET_KEY is required" >&2
-    exit 1
+  if [ -s "$KEY_DIR/nsec" ]; then
+    NOSTR_SECRET_KEY="$(cat "$KEY_DIR/nsec")"
+    if [ -s "$KEY_DIR/npub" ]; then
+      echo "ditto-relay: using relay npub $(cat "$KEY_DIR/npub")" >&2
+    fi
+  else
+    mkdir -p "$KEY_DIR"
+    NOSTR_SECRET_KEY="$(DITTO_RELAY_KEY_DIR="$KEY_DIR" bun -e '
+      import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
+      import { nip19 } from "nostr-tools";
+      import { renameSync, writeFileSync } from "node:fs";
+      import { join } from "node:path";
+
+      const dir = process.env.DITTO_RELAY_KEY_DIR;
+      const secretKey = generateSecretKey();
+      const nsec = nip19.nsecEncode(secretKey);
+      const npub = nip19.npubEncode(getPublicKey(secretKey));
+
+      const write = (name, content, mode) => {
+        const temporaryPath = join(dir, `.${name}.tmp`);
+        writeFileSync(temporaryPath, `${content}\n`, { mode });
+        renameSync(temporaryPath, join(dir, name));
+      };
+
+      write("nsec", nsec, 0o600);
+      write("npub", npub, 0o644);
+      process.stdout.write(nsec);
+    ')"
+    echo "ditto-relay: generated relay npub $(cat "$KEY_DIR/npub")" >&2
   fi
-
-  NOSTR_SECRET_KEY="$(bun -e '
-    import { nip19 } from "nostr-tools";
-
-    const hex = process.env.DITTO_RELAY_SECRET_SEED ?? "";
-    if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
-      console.error("ditto-relay: DITTO_RELAY_SECRET_SEED must be 64 hex characters");
-      process.exit(1);
-    }
-
-    const bytes = Uint8Array.from(hex.match(/../g).map((pair) => parseInt(pair, 16)));
-    process.stdout.write(nip19.nsecEncode(bytes));
-  ')"
   export NOSTR_SECRET_KEY
 fi
 
